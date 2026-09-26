@@ -5,14 +5,6 @@ A small proof of concept of session issuance and verification that:
 - works when the farm device (Hub or legacy Windows desktop) has **no connectivity**;
 - produces a session that Lely's cloud can **verify later**, without a live round trip to an IdP.
 
-The mechanism is a **delegated-signing trust chain**: the cloud never hands out a
-shared secret. Each device holds its own key and a cloud-signed certificate that
-binds that key to a device identity.
-
-```
-cloud root key ──signs──▶ device cert {sub: deviceId, cnf.jwk} ──key in cert verifies──▶ session token
-```
-
 ## Requirements
 
 - Node **>= 22.18** (runs `.ts` files directly via type stripping; CI uses Node 24).
@@ -20,59 +12,7 @@ cloud root key ──signs──▶ device cert {sub: deviceId, cnf.jwk} ──k
 - Docker + Docker Compose for the integration tests (Linux). CI runs on Ubuntu
   only — cross-platform support is out of scope for this PoC.
 
-## Run steps
-
-```bash
-# 1. Install
-npm install
-
-# 2. Start the cloud (issues device certs, verifies sessions)
-npm run cloud
-# note the "enrollment code" it prints; the default is enroll-dev-code
-
-# 3. Enroll the hub (the ONLY online step). In a second terminal:
-npm run enroll-hub
-# generates a device key pair, POSTs the public key + enrollment code to the
-# cloud, and stores the returned device cert + pinned root key locally.
-
-# 4. Start the hub (issues sessions, fully offline)
-npm run hub
-```
-
-Configuration is via environment variables:
-
-| Var                       | Used by                   | Default                 |
-| ------------------------- | ------------------------- | ----------------------- |
-| `HORIZON_DATA_DIR`        | hub, enroll-hub           | `./data`                |
-| `HORIZON_CLOUD_PORT`      | cloud                     | `8081`                  |
-| `HORIZON_HUB_PORT`        | hub                       | `8080`                  |
-| `HORIZON_CLOUD_URL`       | enroll-hub                | `http://127.0.0.1:8081` |
-| `HORIZON_ENROLLMENT_CODE` | cloud, enroll-hub         | `enroll-dev-code`       |
-
-### curl examples
-
-```bash
-# Issue a session on the hub (offline) and capture the token.
-# Authenticating the user is out of scope; the caller supplies the userId.
-TOKEN=$(curl -s -X POST http://127.0.0.1:8080/session \
-  -H 'content-type: application/json' \
-  -d '{"userId":"user-7"}' | \
-  sed -E 's/.*"token":"([^"]+)".*/\1/')
-
-# Verify the session in the cloud -> { userId, deviceId }
-curl -s http://127.0.0.1:8081/whoami -H "authorization: Bearer $TOKEN"
-
-# The pinned root public key
-curl -s http://127.0.0.1:8081/.well-known/jwks.json
-```
-
 ### Verify
-
-The type check runs anywhere:
-
-```bash
-npm run typecheck   # tsc --noEmit
-```
 
 Verification runs **through Docker Compose**. Each setup defines a `tester`
 service that runs the connectivity-agnostic black-box suite (`e2e/`) against the
@@ -93,6 +33,23 @@ docker compose -f docker-compose.offline.yaml down
 ```
 
 Run the online setup first — it populates the volumes the offline setup reuses.
+
+### curl examples
+
+```bash
+# Issue a session on the hub (offline) and capture the token.
+# Authenticating the user is out of scope; the caller supplies the userId.
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/session \
+  -H 'content-type: application/json' \
+  -d '{"userId":"user-7"}' | \
+  sed -E 's/.*"token":"([^"]+)".*/\1/')
+
+# Verify the session in the cloud -> { userId, deviceId }
+curl -s http://127.0.0.1:8081/whoami -H "authorization: Bearer $TOKEN"
+
+# The pinned root public key
+curl -s http://127.0.0.1:8081/.well-known/jwks.json
+```
 
 ## How it works
 
@@ -143,16 +100,16 @@ also disables published ports).
 
 ## Trade-offs
 
-| Decision                                                    | Choice                                                                   | Reason                                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------------------------- |
-| Key type                                                    | Ed25519 (EdDSA)                                                          | Small keys, fast, deterministic signatures, supported by `jose` and `node:crypto` |
-| Session lifetime                                            | 12 h                                                                     | One farm shift                                                                    |
-| Device cert lifetime                                        | 1 year, renew when online and < 30 days remain (renewal not implemented) | Matches the 1-year durability window in the design memo                           |
-| Cert format                                                 | JWT, not X.509                                                           | Smaller PoC. Same trust model as an intermediate CA                               |
-| Cert transport                                              | Embedded in the session header (`dcert`)                                 | Cloud verification stays fully stateless                                          |
+| Decision                                                    | Choice                                                                   | Reason                                                                                                                     |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| Key type                                                    | Ed25519 (EdDSA)                                                          | Small keys, fast, deterministic signatures, supported by `jose` and `node:crypto`                                          |
+| Session lifetime                                            | 12 h                                                                     | One farm shift                                                                                                             |
+| Device cert lifetime                                        | 1 year, renew when online and < 30 days remain (renewal not implemented) | Matches the 1-year durability window in the design memo                                                                    |
+| Cert format                                                 | JWT, not X.509                                                           | Smaller PoC. Same trust model as an intermediate CA                                                                        |
+| Cert transport                                              | Embedded in the session header (`dcert`)                                 | Cloud verification stays fully stateless                                                                                   |
 | Offline proof                                               | Docker network isolation, not a mocked `fetch`                           | Tests the real property (issuance with no cloud route), not an implementation detail. Costs cross-platform CI — Linux only |
-| **Rejected:** a cloud registry of device public keys        | —                                                                        | Works, but needs a DB lookup on every verification                                |
-| **Rejected:** a shared secret or a key derived from the IdP | —                                                                        | One compromised device could forge sessions for every device                      |
+| **Rejected:** a cloud registry of device public keys        | —                                                                        | Works, but needs a DB lookup on every verification                                                                         |
+| **Rejected:** a shared secret or a key derived from the IdP | —                                                                        | One compromised device could forge sessions for every device                                                               |
 
 ## Open questions (out of scope for this PoC)
 
