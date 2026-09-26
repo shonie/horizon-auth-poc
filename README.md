@@ -7,10 +7,10 @@ A small proof of concept of session issuance and verification that:
 
 The mechanism is a **delegated-signing trust chain**: the cloud never hands out a
 shared secret. Each device holds its own key and a cloud-signed certificate that
-binds it to one farm.
+binds that key to a device identity.
 
 ```
-cloud root key ──signs──▶ device cert {farm_id, cnf.jwk} ──key in cert verifies──▶ session token
+cloud root key ──signs──▶ device cert {sub: deviceId, cnf.jwk} ──key in cert verifies──▶ session token
 ```
 
 ## Requirements
@@ -24,7 +24,7 @@ cloud root key ──signs──▶ device cert {farm_id, cnf.jwk} ──key in 
 # 1. Install
 npm install
 
-# 2. Start the cloud (issues device certs, verifies cloud-bound sessions)
+# 2. Start the cloud (issues device certs, verifies sessions)
 npm run cloud
 # note the "enrollment code" it prints; the default is enroll-dev-code
 
@@ -33,10 +33,7 @@ npm run provision
 # generates a device key pair, POSTs the public key + enrollment code to the
 # cloud, and stores the returned device cert + pinned root key locally.
 
-# 4. Seed a user (scrypt password hash, stored locally on the hub)
-npm run seed-user farmer-joe green-pastures-42
-
-# 5. Start the hub (login + local access, fully offline)
+# 4. Start the hub (issues sessions, fully offline)
 npm run hub
 ```
 
@@ -44,27 +41,24 @@ Configuration is via environment variables:
 
 | Var                       | Used by                   | Default                 |
 | ------------------------- | ------------------------- | ----------------------- |
-| `HORIZON_DATA_DIR`        | hub, provision, seed-user | `./data`                |
+| `HORIZON_DATA_DIR`        | hub, provision            | `./data`                |
 | `HORIZON_CLOUD_PORT`      | cloud                     | `8081`                  |
 | `HORIZON_HUB_PORT`        | hub                       | `8080`                  |
 | `HORIZON_CLOUD_URL`       | provision                 | `http://127.0.0.1:8081` |
 | `HORIZON_ENROLLMENT_CODE` | cloud, provision          | `enroll-dev-code`       |
-| `HORIZON_FARM_ID`         | provision                 | `farm-42`               |
 
 ### curl examples
 
 ```bash
-# Log in on the hub (offline) and capture the session token
-TOKEN=$(curl -s -X POST http://127.0.0.1:8080/login \
+# Issue a session on the hub (offline) and capture the token.
+# Authenticating the user is out of scope; the caller supplies the userId.
+TOKEN=$(curl -s -X POST http://127.0.0.1:8080/session \
   -H 'content-type: application/json' \
-  -d '{"username":"farmer-joe","password":"green-pastures-42"}' | \
+  -d '{"userId":"user-7"}' | \
   sed -E 's/.*"token":"([^"]+)".*/\1/')
 
-# Local resource on the hub (hub verification policy)
-curl -s http://127.0.0.1:8080/local/cows -H "authorization: Bearer $TOKEN"
-
-# Cloud resource (cloud verification policy: cert expiry + revocation enforced)
-curl -s http://127.0.0.1:8081/farms/farm-42/reports -H "authorization: Bearer $TOKEN"
+# Verify the session in the cloud -> { userId, deviceId }
+curl -s http://127.0.0.1:8081/whoami -H "authorization: Bearer $TOKEN"
 
 # The pinned root public key
 curl -s http://127.0.0.1:8081/.well-known/jwks.json
@@ -84,39 +78,31 @@ npm test            # node --test
 2. It sends its public key and a one-time enrollment code to the cloud
    (`POST /provision`).
 3. The cloud signs a **device certificate** — a JWT that binds
-   `deviceId + farmId + device public key`, signed by the cloud **root key**. The
+   `deviceId + device public key`, signed by the cloud **root key**. The
    device stores the certificate and pins the cloud root public key.
-4. **Login (offline).** The device verifies the password locally (scrypt) and
-   signs a **session JWT** with its device private key, embedding the device
-   certificate in the JWT header (`dcert`).
+4. **Issue a session (offline).** The device signs a **session JWT** with its
+   device private key, embedding the device certificate in the JWT header
+   (`dcert`). Authenticating the user is out of scope; the caller supplies the
+   `userId`.
 5. **Verification (anywhere).** The pinned root key verifies the certificate; the
    public key inside the certificate verifies the session. No IdP call is needed.
 
-The blast radius of a compromised device is **one farm** — it cannot forge
-sessions for others, because it does not hold the root key. The cloud can revoke
-a device by device ID.
+`verifySession` enforces: the cert signature (against the pinned root key), the
+session signature (against the key in the cert), the cert and session expiry, and
+the issuer binding (`iss === "device:" + cert.sub`), with a 300 s clock tolerance
+for offline drift. It returns `{ userId, deviceId }`.
 
-### One verifier, two policies
-
-`verifySession` runs the same steps everywhere and differs only in policy:
-
-| Policy knob         | Hub                                      | Cloud                                |
-| ------------------- | ---------------------------------------- | ------------------------------------ |
-| `audience`          | `horizon-local`                          | `horizon-cloud`                      |
-| `enforceCertExpiry` | `false` (never lock out an offline farm) | `true`                               |
-| `isRevoked`         | always `false`                           | checks the in-memory revocation list |
-
-Both enforce: signature, session expiry (300 s clock tolerance), issuer binding
-(`iss === "device:" + cert.sub`), and `session.farm_id === cert.farm_id`.
+The blast radius of a compromised device is **that device alone** — it cannot
+forge sessions for any other device, because it does not hold the root key.
 
 ### Emulating network absence
 
-- **By design:** the hub login path has no network dependency. `provision.ts` is
-  the only network caller.
+- **By design:** the hub session-issuance path has no network dependency.
+  `provision.ts` is the only network caller.
 - **In tests:** provision while the cloud runs, then close the cloud (a real
   request would now get `ECONNREFUSED`), replace `globalThis.fetch` with a mock
-  that throws, log in and access a local resource, and assert
-  `fetch.mock.callCount() === 0`. That zero-call assertion is the proof.
+  that throws, issue a session, and assert `fetch.mock.callCount() === 0`. That
+  zero-call assertion is the proof.
 - **Optional manual demo (Linux only, not in CI):** run the hub under
   `docker run --network none` after provisioning to a mounted data dir.
 
@@ -127,23 +113,23 @@ Both enforce: signature, session expiry (300 s clock tolerance), issuer binding
 | Key type                                                    | Ed25519 (EdDSA)                                                          | Small keys, fast, deterministic signatures, supported by `jose` and `node:crypto` |
 | Session lifetime                                            | 12 h                                                                     | One farm shift                                                                    |
 | Device cert lifetime                                        | 1 year, renew when online and < 30 days remain (renewal not implemented) | Matches the 1-year durability window in the design memo                           |
-| Cert expiry on hub                                          | Not enforced                                                             | A farm that is offline for a long time must not lock the farmer out               |
 | Cert format                                                 | JWT, not X.509                                                           | Smaller PoC. Same trust model as an intermediate CA                               |
-| Cert transport                                              | Embedded in the session header (`dcert`)                                 | Cloud verification stays stateless, apart from revocation                         |
+| Cert transport                                              | Embedded in the session header (`dcert`)                                 | Cloud verification stays fully stateless                                          |
 | **Rejected:** a cloud registry of device public keys        | —                                                                        | Works, but needs a DB lookup on every verification                                |
-| **Rejected:** a shared secret or a key derived from the IdP | —                                                                        | One compromised farm could forge sessions for all farms                           |
+| **Rejected:** a shared secret or a key derived from the IdP | —                                                                        | One compromised device could forge sessions for every device                      |
 | **Rejected:** OS-level network isolation in tests           | —                                                                        | Not cross-platform, and needs root                                                |
 
 ## Open questions (out of scope for this PoC)
 
 - **Hardware key protection:** TPM on the Hub, TPM or DPAPI on Windows. The PoC
   stores keys as files in the data dir.
-- **Credential distribution:** how user credentials reach the farm (synced from
-  the cloud, or created locally).
+- **User authentication:** how the user is authenticated before a session is
+  issued (password, PIN, credential sync from the cloud). The PoC takes the
+  `userId` as given.
 - **Session refresh:** silent refresh and re-issue of sessions.
 - **Farm clock drift:** drift while offline, and the tolerance the cloud accepts.
-- **Revocation delivery:** how revocation reaches the hub. The PoC checks
-  revocation only in the cloud.
+- **Revocation:** revoking a compromised device by ID, and delivering that
+  revocation to verifiers. Not implemented in this PoC.
 - **Roles and scopes:** roles, scopes, and RBAC. The design memo assumes one role.
 - **Cert renewal:** the certificate renewal endpoint.
 

@@ -7,11 +7,15 @@ export const CERT_ISSUER = "lely-cloud";
 // One year, matching the durability window in the design memo.
 export const DEVICE_CERT_LIFETIME_S = 365 * 24 * 60 * 60;
 
+// RFC 7800 proof-of-possession confirmation: the device public key.
+export type ConfirmationClaim = {
+  jwk: JWK;
+};
+
 export type DeviceCertClaims = {
   iss: string;
   sub: string;
-  farm_id: string;
-  cnf: { jwk: JWK };
+  cnf: ConfirmationClaim;
   iat: number;
   exp: number;
 };
@@ -20,20 +24,18 @@ export type IssueDeviceCertInput = {
   rootPrivateKey: KeyLike;
   rootKid: string;
   deviceId: string;
-  farmId: string;
   devicePublicJwk: JWK;
   now?: Date;
   lifetimeSeconds?: number;
 };
 
-// Cloud-side. Binds deviceId + farmId + device public key, signed by the root key.
+// Cloud-side. Binds deviceId + device public key, signed by the root key.
 export async function issueDeviceCert(input: IssueDeviceCertInput): Promise<string> {
   const now = input.now ?? new Date();
   const iat = Math.floor(now.getTime() / 1000);
   const exp = iat + (input.lifetimeSeconds ?? DEVICE_CERT_LIFETIME_S);
 
   return new SignJWT({
-    farm_id: input.farmId,
     cnf: { jwk: input.devicePublicJwk },
   })
     .setProtectedHeader({ alg: "EdDSA", typ: DEVICE_CERT_TYP, kid: input.rootKid })
@@ -46,13 +48,10 @@ export async function issueDeviceCert(input: IssueDeviceCertInput): Promise<stri
 
 export type VerifyDeviceCertOptions = {
   rootKey: KeyLike;
-  enforceExpiry: boolean;
   currentDate?: Date;
 };
 
 // Verifies the cert signature against the pinned root key and checks its claims.
-// Expiry is enforced only when enforceExpiry is true (cloud), so a long-offline
-// farm is not locked out (hub).
 export async function verifyDeviceCert(
   token: string,
   options: VerifyDeviceCertOptions,
@@ -75,11 +74,9 @@ export async function verifyDeviceCert(
     throw new Error("device cert has no confirmation key");
   }
 
-  if (options.enforceExpiry) {
-    const nowS = Math.floor((options.currentDate ?? new Date()).getTime() / 1000);
-    if (typeof claims.exp !== "number" || claims.exp <= nowS) {
-      throw new Error("device cert is expired");
-    }
+  const nowS = Math.floor((options.currentDate ?? new Date()).getTime() / 1000);
+  if (typeof claims.exp !== "number" || claims.exp <= nowS) {
+    throw new Error("device cert is expired");
   }
 
   return claims;

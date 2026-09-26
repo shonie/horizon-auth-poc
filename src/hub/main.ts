@@ -8,7 +8,7 @@ const hub = await createHubServer({ port, store });
 
 console.log(`[hub] listening on http://127.0.0.1:${hub.port()}`);
 console.log(`[hub] data dir: ${store.dataDir}`);
-console.log("[hub] endpoints: POST /login, GET /local/cows");
+console.log("[hub] endpoints: POST /session");
 
 const shutdown = () => {
   hub.close().then(() => process.exit(0));

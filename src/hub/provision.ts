@@ -12,13 +12,11 @@ import type { Store } from "./store.ts";
 export type ProvisionConfig = {
   cloudUrl: string;
   enrollmentCode: string;
-  farmId: string;
   store: Store;
 };
 
 export type ProvisionResult = {
   deviceId: string;
-  farmId: string;
 };
 
 type ProvisionResponse = {
@@ -37,7 +35,6 @@ export async function provisionDevice(config: ProvisionConfig): Promise<Provisio
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       enrollmentCode: config.enrollmentCode,
-      farmId: config.farmId,
       publicJwk: keys.publicJwk,
     }),
   });
@@ -53,25 +50,23 @@ export async function provisionDevice(config: ProvisionConfig): Promise<Provisio
   const privateJwk = await exportPrivateJwk(keys.privateKey);
   await config.store.saveDeviceIdentity({
     deviceId: body.deviceId,
-    farmId: config.farmId,
     privateJwk,
     deviceCert: body.deviceCert,
     rootJwk: body.rootJwk,
   });
 
-  return { deviceId: body.deviceId, farmId: config.farmId };
+  return { deviceId: body.deviceId };
 }
 
 // CLI entry: node src/hub/provision.ts
 async function main() {
   const cloudUrl = process.env.HORIZON_CLOUD_URL ?? "http://127.0.0.1:8081";
   const enrollmentCode = process.env.HORIZON_ENROLLMENT_CODE ?? "enroll-dev-code";
-  const farmId = process.env.HORIZON_FARM_ID ?? "farm-42";
 
   const store = createStore(resolveDataDir());
-  const result = await provisionDevice({ cloudUrl, enrollmentCode, farmId, store });
+  const result = await provisionDevice({ cloudUrl, enrollmentCode, store });
 
-  console.log(`[provision] device provisioned: ${result.deviceId} for ${result.farmId}`);
+  console.log(`[provision] device provisioned: ${result.deviceId}`);
   console.log(`[provision] identity stored in ${store.dataDir}`);
 }
 

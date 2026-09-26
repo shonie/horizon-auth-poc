@@ -8,7 +8,7 @@ const cloud = await createCloudServer({ port, enrollmentCode });
 console.log(`[cloud] listening on http://127.0.0.1:${cloud.port()}`);
 console.log(`[cloud] root kid: ${cloud.rootKeyPair.kid}`);
 console.log(`[cloud] enrollment code: ${enrollmentCode}`);
-console.log("[cloud] endpoints: POST /provision, GET /.well-known/jwks.json, GET /farms/:farmId/reports");
+console.log("[cloud] endpoints: POST /provision, GET /.well-known/jwks.json, GET /whoami");
 
 const shutdown = () => {
   cloud.close().then(() => process.exit(0));

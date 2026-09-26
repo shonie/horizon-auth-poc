@@ -12,8 +12,7 @@
     "typecheck": "tsc --noEmit",
     "cloud": "node src/cloud/main.ts",
     "hub": "node src/hub/main.ts",
-    "provision": "node src/hub/provision.ts",
-    "seed-user": "node src/hub/seed-users.ts"
+    "provision": "node src/hub/provision.ts"
   },
   "dependencies": {
     "jose": "^5.9.6"

@@ -9,14 +9,19 @@ import { createCloudServer } from "../src/cloud/server.ts";
 import { createHubServer } from "../src/hub/server.ts";
 import { createStore } from "../src/hub/store.ts";
 import { provisionDevice } from "../src/hub/provision.ts";
-import { hashPassword } from "../src/core/passwords.ts";
 
 const ENROLLMENT_CODE = "enroll-test-code";
-const FARM_ID = "farm-42";
-const USERNAME = "farmer-joe";
-const PASSWORD = "green-pastures-42";
+const USER_ID = "user-7";
 
-type Response = { status: number; json: any };
+type HttpResponse = {
+  status: number;
+  json: any;
+};
+
+type RequestOptions = {
+  token?: string;
+  body?: unknown;
+};
 
 // Test HTTP client built on node:http, so it never touches globalThis.fetch
 // (the offline test stubs fetch and asserts zero calls).
@@ -24,8 +29,8 @@ function request(
   port: number,
   method: string,
   reqPath: string,
-  opts: { token?: string; body?: unknown } = {},
-): Promise<Response> {
+  opts: RequestOptions = {},
+): Promise<HttpResponse> {
   return new Promise((resolve, reject) => {
     const data = opts.body === undefined ? undefined : JSON.stringify(opts.body);
     const headers: Record<string, string> = {};
@@ -48,89 +53,64 @@ function request(
   });
 }
 
-async function makeDataDir(): Promise<string> {
-  return mkdtemp(path.join(os.tmpdir(), "horizon-e2e-"));
-}
+type Closable = {
+  close: () => Promise<void>;
+};
 
-// Bring up a cloud, provision a hub against it, and seed one user.
+// Bring up a cloud and provision a hub against it.
 async function setup() {
-  const dataDir = await makeDataDir();
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "horizon-e2e-"));
   const store = createStore(dataDir);
-  await store.upsertUser({ username: USERNAME, passwordHash: await hashPassword(PASSWORD) });
 
   const cloud = await createCloudServer({ port: 0, enrollmentCode: ENROLLMENT_CODE });
   await provisionDevice({
     cloudUrl: `http://127.0.0.1:${cloud.port()}`,
     enrollmentCode: ENROLLMENT_CODE,
-    farmId: FARM_ID,
     store,
   });
 
   return { dataDir, store, cloud };
 }
 
-async function cleanup(dataDir: string, servers: Array<{ close: () => Promise<void> }>) {
+async function cleanup(dataDir: string, servers: Closable[]) {
   for (const s of servers) {
     await s.close().catch(() => {});
   }
   await rm(dataDir, { recursive: true, force: true });
 }
 
-test("offline login and local access make zero network calls", async () => {
-  const { dataDir, store, cloud } = await setup();
-  const hub = await createHubServer({ port: 0, store });
-
-  try {
-    // Stop the cloud so a real request would get ECONNREFUSED.
-    await cloud.close();
-
-    // Stub fetch so any network attempt throws — and count the calls.
-    const fetchMock = mock.method(globalThis, "fetch", () => {
-      throw new Error("network is down");
-    });
-
-    try {
-      const login = await request(hub.port(), "POST", "/login", {
-        body: { username: USERNAME, password: PASSWORD },
-      });
-      assert.equal(login.status, 200);
-      const token = login.json.token as string;
-      assert.ok(token);
-
-      const cows = await request(hub.port(), "GET", "/local/cows", { token });
-      assert.equal(cows.status, 200);
-      assert.equal(cows.json.farmId, FARM_ID);
-
-      // The proof: the hub made no network calls.
-      assert.equal(fetchMock.mock.callCount(), 0);
-    } finally {
-      fetchMock.mock.restore();
-    }
-  } finally {
-    await cleanup(dataDir, [hub]);
-  }
-});
-
-test("the cloud verifies a token issued while it was offline", async () => {
+test("a session issued offline is verified later by the cloud", async () => {
   const { dataDir, store, cloud } = await setup();
   const hub = await createHubServer({ port: 0, store });
   const rootKeyPair = cloud.rootKeyPair;
 
   try {
-    // Issue the token while the cloud is down.
+    // Stop the cloud so a real request would get ECONNREFUSED, and stub fetch
+    // so any network attempt throws — and is counted.
     await cloud.close();
-    const login = await request(hub.port(), "POST", "/login", {
-      body: { username: USERNAME, password: PASSWORD },
+    const fetchMock = mock.method(globalThis, "fetch", () => {
+      throw new Error("network is down");
     });
-    assert.equal(login.status, 200);
-    const token = login.json.token as string;
 
-    // Restart the cloud with the SAME root key.
+    let token: string;
+    try {
+      const issued = await request(hub.port(), "POST", "/session", { body: { userId: USER_ID } });
+      assert.equal(issued.status, 200);
+      token = issued.json.token as string;
+      assert.ok(token);
+
+      // The proof: issuing the session made no network calls.
+      assert.equal(fetchMock.mock.callCount(), 0);
+    } finally {
+      fetchMock.mock.restore();
+    }
+
+    // Restart the cloud with the SAME root key, then verify the offline token.
     const cloud2 = await createCloudServer({ port: 0, enrollmentCode: ENROLLMENT_CODE, rootKeyPair });
     try {
-      const reports = await request(cloud2.port(), "GET", `/farms/${FARM_ID}/reports`, { token });
-      assert.equal(reports.status, 200);
-      assert.equal(reports.json.farmId, FARM_ID);
+      const who = await request(cloud2.port(), "GET", "/whoami", { token });
+      assert.equal(who.status, 200);
+      assert.deepEqual(who.json, { userId: USER_ID, deviceId: (await store.loadDeviceIdentity())?.deviceId });
     } finally {
       await cloud2.close();
     }
@@ -139,50 +119,28 @@ test("the cloud verifies a token issued while it was offline", async () => {
   }
 });
 
-test("negative cases: bad credentials, missing/tampered token, wrong farm, revocation, reused code", async () => {
+test("negative cases: no token, tampered token, reused enrollment code", async () => {
   const { dataDir, store, cloud } = await setup();
   const hub = await createHubServer({ port: 0, store });
 
   try {
-    // A wrong password returns 401.
-    const badLogin = await request(hub.port(), "POST", "/login", {
-      body: { username: USERNAME, password: "wrong" },
-    });
-    assert.equal(badLogin.status, 401);
+    // No token returns 401.
+    assert.equal((await request(cloud.port(), "GET", "/whoami", {})).status, 401);
 
-    // No token returns 401 on both services.
-    assert.equal((await request(hub.port(), "GET", "/local/cows", {})).status, 401);
-    assert.equal((await request(cloud.port(), "GET", `/farms/${FARM_ID}/reports`, {})).status, 401);
-
-    // A good token to work from.
-    const login = await request(hub.port(), "POST", "/login", {
-      body: { username: USERNAME, password: PASSWORD },
-    });
-    assert.equal(login.status, 200);
-    const token = login.json.token as string;
-
-    // A tampered token returns 401 on the hub and in the cloud.
+    // A tampered token returns 401.
+    const issued = await request(hub.port(), "POST", "/session", { body: { userId: USER_ID } });
+    const token = issued.json.token as string;
     const [h, p, s] = token.split(".");
     const claims = JSON.parse(Buffer.from(p, "base64url").toString("utf8"));
     claims.sub = "attacker";
     const tampered = `${h}.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.${s}`;
-    assert.equal((await request(hub.port(), "GET", "/local/cows", { token: tampered })).status, 401);
-    assert.equal((await request(cloud.port(), "GET", `/farms/${FARM_ID}/reports`, { token: tampered })).status, 401);
-
-    // A farm-42 token on /farms/farm-99/reports returns 403.
-    const wrongFarm = await request(cloud.port(), "GET", "/farms/farm-99/reports", { token });
-    assert.equal(wrongFarm.status, 403);
-
-    // A revoked device returns 401 in the cloud and still 200 on the hub.
-    const identity = await store.loadDeviceIdentity();
-    assert.ok(identity);
-    cloud.revokeDevice(identity.deviceId);
-    assert.equal((await request(cloud.port(), "GET", `/farms/${FARM_ID}/reports`, { token })).status, 401);
-    assert.equal((await request(hub.port(), "GET", "/local/cows", { token })).status, 200);
+    assert.equal((await request(cloud.port(), "GET", "/whoami", { token: tampered })).status, 401);
 
     // A reused enrollment code returns 401.
+    const identity = await store.loadDeviceIdentity();
+    assert.ok(identity);
     const reuse = await request(cloud.port(), "POST", "/provision", {
-      body: { enrollmentCode: ENROLLMENT_CODE, farmId: FARM_ID, publicJwk: identity.rootJwk },
+      body: { enrollmentCode: ENROLLMENT_CODE, publicJwk: identity.rootJwk },
     });
     assert.equal(reuse.status, 401);
   } finally {
