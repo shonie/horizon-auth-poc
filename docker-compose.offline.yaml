@@ -1,0 +1,86 @@
+# Offline setup: reuses the volumes populated by the online run (the enrolled
+# hub identity and the cloud root key). The hub is on a network with no route to
+# the cloud, yet still issues sessions. The `tester` sits on BOTH networks —
+# it reaches the hub and the cloud, but they cannot reach each other. It plays
+# the courier that carries the offline-issued token to the cloud.
+#
+#   docker compose -f docker-compose.offline.yaml run --rm tester
+#
+# Run the online compose first — these volumes are declared external.
+name: horizon-offline
+
+services:
+  cloud:
+    build: .
+    command: ["node", "src/cloud/main.ts"]
+    environment:
+      HORIZON_CLOUD_PORT: "8081"
+      HORIZON_BIND_HOST: "0.0.0.0"
+      HORIZON_ROOT_KEY_FILE: "/state/root.json"
+    volumes:
+      - cloud-state:/state
+    ports:
+      - "${CLOUD_HOST_PORT:-8081}:8081"
+    networks:
+      - cloudnet
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/.well-known/jwks.json"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  hub:
+    build: .
+    # Already enrolled from the online run — serve only.
+    command: ["node", "src/hub/main.ts"]
+    environment:
+      HORIZON_HUB_PORT: "8080"
+      HORIZON_BIND_HOST: "0.0.0.0"
+      HORIZON_DATA_DIR: "/state"
+    volumes:
+      - hub-state:/state
+    ports:
+      - "${HUB_HOST_PORT:-8080}:8080"
+    networks:
+      - hubnet
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(8080,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  tester:
+    build: .
+    command: ["npm", "run", "test:e2e"]
+    environment:
+      HUB_URL: "http://hub:8080"
+      CLOUD_URL: "http://cloud:8081"
+    volumes:
+      - ./e2e:/app/e2e:ro
+    # On both networks so it can reach each service; the hub and cloud still
+    # cannot reach each other.
+    networks:
+      - hubnet
+      - cloudnet
+    depends_on:
+      cloud:
+        condition: service_healthy
+      hub:
+        condition: service_healthy
+
+networks:
+  cloudnet:
+  # A separate network the cloud is NOT on, so the hub cannot reach the cloud
+  # (its hostname does not even resolve) — yet the hub stays reachable via the
+  # tester and its published port. This proves issuance needs no cloud contact.
+  # (`internal: true` would fully cut the internet but also breaks published
+  # ports; `docker run --network none` is the stronger manual demo in the ADR.)
+  hubnet:
+
+volumes:
+  cloud-state:
+    name: horizon-cloud-state
+    external: true
+  hub-state:
+    name: horizon-hub-state
+    external: true

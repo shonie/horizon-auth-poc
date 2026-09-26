@@ -1,0 +1,24 @@
+{
+  "name": "horizon-auth-poc",
+  "version": "1.0.0",
+  "description": "Horizon offline-capable authentication (PoC)",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "test:e2e": "node --test \"e2e/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit",
+    "cloud": "node src/cloud/main.ts",
+    "hub": "node src/hub/main.ts",
+    "enroll-hub": "node src/hub/enroll-hub.ts"
+  },
+  "dependencies": {
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "^5.7.2"
+  }
+}
