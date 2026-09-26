@@ -29,7 +29,7 @@ type SessionRequest = {
 export async function createHubServer(config: HubConfig): Promise<HubServer> {
   const loaded = await config.store.loadDeviceIdentity();
   if (!loaded) {
-    throw new Error("hub is not provisioned: run provision first");
+    throw new Error("hub is not enrolled: run enroll-hub first");
   }
   const identity = loaded;
   const devicePrivateKey = await importPrivateKey(identity.privateJwk);

@@ -14,7 +14,7 @@ Do not derive or copy a private key from the cloud IdP. If every device holds a 
 Use a trust chain instead:
 
 1. **Installation (online, once):** The device generates its own Ed25519 key pair. The private key never leaves the device.
-2. The device sends its public key and a one-time enrollment code to the cloud (`POST /provision`).
+2. The device sends its public key and a one-time enrollment code to the cloud (`POST /enroll-hub`).
 3. The cloud signs a **device certificate**: a JWT that binds `deviceId + device public key`. The cloud root key signs it. The device stores the certificate and pins the cloud root public key.
 4. **Issue a session (offline):** The device signs a session JWT with the device private key and embeds the device certificate in the JWT header. Authenticating the user is out of scope; the caller supplies the `userId`.
 5. **Verification (anywhere):** The pinned root key verifies the device certificate. The public key in the certificate verifies the session. No IdP call is necessary.
@@ -56,11 +56,11 @@ horizon-auth-poc/
       session.ts        # issueSession (hub), verifySession (both)
     hub/
       server.ts         # createHubServer(config): POST /session
-      provision.ts      # install-time step; the ONLY hub code that uses the network
+      enroll-hub.ts     # install-time step; the ONLY hub code that uses the network
       store.ts          # read/write: device private key, device cert, root JWK
       main.ts           # reads env, calls listen
     cloud/
-      server.ts         # createCloudServer(config): POST /provision,
+      server.ts         # createCloudServer(config): POST /enroll-hub,
                         # GET /.well-known/jwks.json, GET /whoami
       main.ts
   test/
@@ -123,9 +123,9 @@ Failed verification returns 401.
 
 ## 6. Flows
 
-- **Provision (hub, online):**
+- **Enroll (hub, online):**
   1. Generate the key pair.
-  2. `POST /provision { enrollmentCode, publicJwk }`. The response is `{ deviceId, deviceCert, rootJwk }`.
+  2. `POST /enroll-hub { enrollmentCode, publicJwk }`. The response is `{ deviceId, deviceCert, rootJwk }`.
   3. Persist the key pair, `deviceCert`, and `rootJwk` to the store.
 - **Issue a session (hub, offline):**
   1. `POST /session { userId }`. Authenticating the user is out of scope.
@@ -135,9 +135,9 @@ Failed verification returns 401.
 
 ## 7. Emulating network absence
 
-- **By design:** The hub session-issuance path has no network dependency. `provision.ts` is the only network caller.
+- **By design:** The hub session-issuance path has no network dependency. `enroll-hub.ts` is the only network caller.
 - **In tests:**
-  1. Provision while the cloud runs, then `await cloud.close()`. Now a real request gets `ECONNREFUSED`.
+  1. Enroll the hub while the cloud runs, then `await cloud.close()`. Now a real request gets `ECONNREFUSED`.
   2. Replace `globalThis.fetch` with `mock.method` so it throws. Assert `fetch.mock.callCount() === 0` after issuing a session. This zero-call assertion is the proof.
 - **Optional manual demo (Linux only, not in CI):** `docker run --network none`. Document it in the README only.
 
@@ -156,7 +156,7 @@ Test the pure functions with no HTTP:
 Test the full flow over HTTP on `127.0.0.1` with port 0:
 
 1. **A session issued offline is verified later by the cloud:**
-   1. Start the cloud and provision the hub.
+   1. Start the cloud and enroll the hub.
    2. Stop the cloud and stub fetch.
    3. Issue a session and expect 200; assert 0 fetch calls.
    4. Restart the cloud with the same root key.
@@ -177,16 +177,16 @@ Work in this order. Finish each milestone with green tests before you start the 
    - `"typecheck": "tsc --noEmit"`
    - `"cloud": "node src/cloud/main.ts"`
    - `"hub": "node src/hub/main.ts"`
-   - `"provision": "node src/hub/provision.ts"`
+   - `"enroll-hub": "node src/hub/enroll-hub.ts"`
 
    Also add the CI workflow.
 
 2. `core/` and `core.test.ts`.
 3. The cloud server.
-4. The hub store and provisioning.
+4. The hub store and enrollment.
 5. The hub server and `e2e.test.ts`.
 6. `README.md`, with these sections:
-   - Run steps: install, start the cloud, provision, start the hub, run curl examples, run the tests.
+   - Run steps: install, start the cloud, enroll the hub, start the hub, run curl examples, run the tests.
    - A short mechanism explanation with the diagram from section 1.
    - Trade-offs (section 10).
    - Open questions (section 11).

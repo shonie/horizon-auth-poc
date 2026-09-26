@@ -8,7 +8,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { createCloudServer } from "../src/cloud/server.ts";
 import { createHubServer } from "../src/hub/server.ts";
 import { createStore } from "../src/hub/store.ts";
-import { provisionDevice } from "../src/hub/provision.ts";
+import { enrollHub } from "../src/hub/enroll-hub.ts";
 
 const ENROLLMENT_CODE = "enroll-test-code";
 const USER_ID = "user-7";
@@ -57,13 +57,13 @@ type Closable = {
   close: () => Promise<void>;
 };
 
-// Bring up a cloud and provision a hub against it.
+// Bring up a cloud and enroll a hub against it.
 async function setup() {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "horizon-e2e-"));
   const store = createStore(dataDir);
 
   const cloud = await createCloudServer({ port: 0, enrollmentCode: ENROLLMENT_CODE });
-  await provisionDevice({
+  await enrollHub({
     cloudUrl: `http://127.0.0.1:${cloud.port()}`,
     enrollmentCode: ENROLLMENT_CODE,
     store,
@@ -139,7 +139,7 @@ test("negative cases: no token, tampered token, reused enrollment code", async (
     // A reused enrollment code returns 401.
     const identity = await store.loadDeviceIdentity();
     assert.ok(identity);
-    const reuse = await request(cloud.port(), "POST", "/provision", {
+    const reuse = await request(cloud.port(), "POST", "/enroll-hub", {
       body: { enrollmentCode: ENROLLMENT_CODE, publicJwk: identity.rootJwk },
     });
     assert.equal(reuse.status, 401);

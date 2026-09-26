@@ -12,7 +12,7 @@
     "typecheck": "tsc --noEmit",
     "cloud": "node src/cloud/main.ts",
     "hub": "node src/hub/main.ts",
-    "provision": "node src/hub/provision.ts"
+    "enroll-hub": "node src/hub/enroll-hub.ts"
   },
   "dependencies": {
     "jose": "^5.9.6"

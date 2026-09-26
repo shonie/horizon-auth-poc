@@ -28,8 +28,8 @@ npm install
 npm run cloud
 # note the "enrollment code" it prints; the default is enroll-dev-code
 
-# 3. Provision the hub (the ONLY online step). In a second terminal:
-npm run provision
+# 3. Enroll the hub (the ONLY online step). In a second terminal:
+npm run enroll-hub
 # generates a device key pair, POSTs the public key + enrollment code to the
 # cloud, and stores the returned device cert + pinned root key locally.
 
@@ -41,11 +41,11 @@ Configuration is via environment variables:
 
 | Var                       | Used by                   | Default                 |
 | ------------------------- | ------------------------- | ----------------------- |
-| `HORIZON_DATA_DIR`        | hub, provision            | `./data`                |
+| `HORIZON_DATA_DIR`        | hub, enroll-hub           | `./data`                |
 | `HORIZON_CLOUD_PORT`      | cloud                     | `8081`                  |
 | `HORIZON_HUB_PORT`        | hub                       | `8080`                  |
-| `HORIZON_CLOUD_URL`       | provision                 | `http://127.0.0.1:8081` |
-| `HORIZON_ENROLLMENT_CODE` | cloud, provision          | `enroll-dev-code`       |
+| `HORIZON_CLOUD_URL`       | enroll-hub                | `http://127.0.0.1:8081` |
+| `HORIZON_ENROLLMENT_CODE` | cloud, enroll-hub         | `enroll-dev-code`       |
 
 ### curl examples
 
@@ -76,7 +76,7 @@ npm test            # node --test
 1. **Installation (online, once).** The device generates its own Ed25519 key pair.
    The private key never leaves the device.
 2. It sends its public key and a one-time enrollment code to the cloud
-   (`POST /provision`).
+   (`POST /enroll-hub`).
 3. The cloud signs a **device certificate** — a JWT that binds
    `deviceId + device public key`, signed by the cloud **root key**. The
    device stores the certificate and pins the cloud root public key.
@@ -98,13 +98,13 @@ forge sessions for any other device, because it does not hold the root key.
 ### Emulating network absence
 
 - **By design:** the hub session-issuance path has no network dependency.
-  `provision.ts` is the only network caller.
-- **In tests:** provision while the cloud runs, then close the cloud (a real
+  `enroll-hub.ts` is the only network caller.
+- **In tests:** enroll the hub while the cloud runs, then close the cloud (a real
   request would now get `ECONNREFUSED`), replace `globalThis.fetch` with a mock
   that throws, issue a session, and assert `fetch.mock.callCount() === 0`. That
   zero-call assertion is the proof.
 - **Optional manual demo (Linux only, not in CI):** run the hub under
-  `docker run --network none` after provisioning to a mounted data dir.
+  `docker run --network none` after enrolling to a mounted data dir.
 
 ## Trade-offs
 

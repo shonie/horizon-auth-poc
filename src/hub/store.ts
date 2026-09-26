@@ -51,7 +51,7 @@ export function createStore(dataDir: string): Store {
   };
 }
 
-// Resolves the data dir from the environment. main.ts and provision use this;
+// Resolves the data dir from the environment. main.ts and enroll-hub use this;
 // tests pass a temp dir straight to createStore.
 export function resolveDataDir(): string {
   const fromEnv = process.env.HORIZON_DATA_DIR;

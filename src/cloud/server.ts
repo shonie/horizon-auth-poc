@@ -39,7 +39,7 @@ async function makeRootKeyPair(): Promise<CloudRootKeyPair> {
   return { publicKey, privateKey, kid: `root-${randomUUID()}` };
 }
 
-type ProvisionRequest = {
+type EnrollHubRequest = {
   enrollmentCode?: unknown;
   publicJwk?: unknown;
 };
@@ -56,8 +56,8 @@ export async function createCloudServer(config: CloudConfig): Promise<CloudServe
       const url = new URL(req.url ?? "/", "http://localhost");
       const path = url.pathname;
 
-      if (req.method === "POST" && path === "/provision") {
-        await handleProvision(req, res);
+      if (req.method === "POST" && path === "/enroll-hub") {
+        await handleEnrollHub(req, res);
         return;
       }
       if (req.method === "GET" && path === "/.well-known/jwks.json") {
@@ -75,8 +75,8 @@ export async function createCloudServer(config: CloudConfig): Promise<CloudServe
     }
   });
 
-  async function handleProvision(req: IncomingMessage, res: ServerResponse) {
-    const body = ((await readJson(req)) ?? {}) as ProvisionRequest;
+  async function handleEnrollHub(req: IncomingMessage, res: ServerResponse) {
+    const body = ((await readJson(req)) ?? {}) as EnrollHubRequest;
     const { enrollmentCode, publicJwk } = body;
 
     if (typeof enrollmentCode !== "string" || typeof publicJwk !== "object" || publicJwk === null) {
