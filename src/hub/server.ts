@@ -2,8 +2,8 @@ import { createServer } from "node:http";
 import type { Server, IncomingMessage, ServerResponse } from "node:http";
 
 import { readJson, sendJson } from "../http.ts";
-import { importPrivateKey } from "../core/keys.ts";
-import { issueSession } from "../core/session.ts";
+import { importPrivateKey } from "./keys.ts";
+import { issueSession } from "./session.ts";
 import type { Store } from "./store.ts";
 
 // The hub runs on the farm. It issues sessions offline: it has NO network
@@ -14,6 +14,8 @@ import type { Store } from "./store.ts";
 export type HubConfig = {
   port: number;
   store: Store;
+  // Bind address. Defaults to loopback; set to 0.0.0.0 in a container.
+  host?: string;
 };
 
 export type HubServer = {
@@ -67,7 +69,7 @@ export async function createHubServer(config: HubConfig): Promise<HubServer> {
     sendJson(res, 200, { token });
   }
 
-  await new Promise<void>((resolve) => server.listen(config.port, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(config.port, config.host ?? "127.0.0.1", resolve));
 
   return {
     server,

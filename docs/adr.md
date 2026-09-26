@@ -33,12 +33,10 @@ cloud root key ──signs──▶ device cert {sub: deviceId, cnf.jwk} ──k
   - Typecheck with `tsc --noEmit`, which is a dev dependency only.
 - **Runtime dependency:** `jose` only, for JWS/JWT with EdDSA. Do not hand-roll JWT.
 - **Built-ins:** `node:http` (no framework), `node:crypto` (randomUUID), `node:fs/promises`, `node:path`.
-- **Tests:** `node:test` and `node:assert/strict`. Use `mock.method`.
+- **Tests:** `node:test` and `node:assert/strict`. Unit tests cover `core/`; a black-box HTTP suite (`e2e/`) runs against a hub and a cloud provided by the environment.
 - **Style:** Functional. Use pure functions in `core/` and factories for the servers. Use classes only if a library requires them.
-- **Cross-platform:** It must run on Windows and Linux.
-  - Use `node:path` for all paths.
-  - Do not use shell-specific npm scripts.
-  - Take the data directory from the `HORIZON_DATA_DIR` env var, with `os.tmpdir()`-based defaults in tests.
+- **Integration setup:** Docker + Docker Compose (Linux). Cross-platform support is out of scope for this PoC; CI runs on Ubuntu only.
+  - Take the data directory from the `HORIZON_DATA_DIR` env var.
 
 ## 3. Structure
 
@@ -48,26 +46,31 @@ One package. Do not use workspaces.
 horizon-auth-poc/
   package.json          # "type": "module"
   tsconfig.json
-  .github/workflows/ci.yml   # matrix: ubuntu-latest, windows-latest; npm ci, typecheck, test
+  Dockerfile
+  docker-compose.online.yaml   # hub can reach the cloud (enrolls, then serves)
+  docker-compose.offline.yaml  # hub isolated from the cloud; already enrolled
+  .github/workflows/ci.yml     # ubuntu-only: typecheck job + docker integration job
   src/
-    core/               # pure functions, no I/O, shared by both services
-      keys.ts           # generateDeviceKeys, export/import JWK
-      device-cert.ts    # issueDeviceCert (cloud), verifyDeviceCert
-      session.ts        # issueSession (hub), verifySession (both)
-    hub/
+    hub/                # produces: device keys + sessions
+      keys.ts           # generateDeviceKeys, export/import private JWK
+      session.ts        # issueSession (signs with the device key)
       server.ts         # createHubServer(config): POST /session
       enroll-hub.ts     # install-time step; the ONLY hub code that uses the network
       store.ts          # read/write: device private key, device cert, root JWK
       main.ts           # reads env, calls listen
-    cloud/
+    cloud/              # produces certs; verifies certs + sessions
+      device-cert.ts    # issueDeviceCert, verifyDeviceCert
+      session.ts        # verifySession
       server.ts         # createCloudServer(config): POST /enroll-hub,
                         # GET /.well-known/jwks.json, GET /whoami
+      root-key.ts       # load-or-create the persisted root key (trust anchor)
       main.ts
-  test/
-    core.test.ts
-    e2e.test.ts
+  e2e/
+    verify.test.ts      # black-box HTTP suite; reads HUB_URL / CLOUD_URL
   README.md
 ```
+
+Each service owns the token logic it needs — the hub only *produces* (keys, sessions), the cloud only *issues certs and verifies*. Nothing is shared at runtime, so there is no shared `core/` package and no hub→cloud dependency. The pure token functions are exercised end-to-end by the black-box suite rather than by separate unit tests.
 
 Rules:
 
@@ -135,64 +138,47 @@ Failed verification returns 401.
 
 ## 7. Emulating network absence
 
-- **By design:** The hub session-issuance path has no network dependency. `enroll-hub.ts` is the only network caller.
-- **In tests:**
-  1. Enroll the hub while the cloud runs, then `await cloud.close()`. Now a real request gets `ECONNREFUSED`.
-  2. Replace `globalThis.fetch` with `mock.method` so it throws. Assert `fetch.mock.callCount() === 0` after issuing a session. This zero-call assertion is the proof.
-- **Optional manual demo (Linux only, not in CI):** `docker run --network none`. Document it in the README only.
+The offline property is proven by the environment, not by the test code. The
+same black-box suite runs against two compose setups:
+
+- **Online** (`docker-compose.online.yaml`): hub and cloud share a network; the hub enrolls at startup (setup, not asserted) then serves.
+- **Offline** (`docker-compose.offline.yaml`): reuses the enrolled hub identity and the persisted cloud root key, but places the hub on a network the cloud is **not** on. The hub cannot reach the cloud (the hostname does not resolve), yet it still issues sessions; the test carries the token to the cloud, which verifies it.
+
+Because the suite never depends on hub→cloud connectivity at runtime (only enrollment does, and that is setup), the identical suite passes in both — a real network cut rather than a mocked `fetch`. A stronger "no internet at all" demo is `docker run --network none` on the enrolled hub.
 
 ## 8. Tests
 
-### `test/core.test.ts`
+A single connectivity-agnostic black-box suite, `e2e/verify.test.ts`. It talks HTTP to `HUB_URL` and `CLOUD_URL` (from the environment) and makes no assumptions about connectivity. Enrollment is done by the setup, not asserted here. Each compose file defines a `tester` service that runs it against the hub and cloud over the compose network; the SAME suite runs against both the online and offline setups (see section 7):
 
-Test the pure functions with no HTTP:
+- The hub issues a session and the cloud verifies it (`{ userId, deviceId }`).
+- The cloud rejects a missing token and a tampered token (401).
 
-- A valid session verifies against the pinned root key.
-- A session whose cert was signed by a different root is rejected (you cannot forge a chain without the real root key).
-- A tampered session payload is rejected.
-
-### `test/e2e.test.ts`
-
-Test the full flow over HTTP on `127.0.0.1` with port 0:
-
-1. **A session issued offline is verified later by the cloud:**
-   1. Start the cloud and enroll the hub.
-   2. Stop the cloud and stub fetch.
-   3. Issue a session and expect 200; assert 0 fetch calls.
-   4. Restart the cloud with the same root key.
-   5. Call `GET /whoami` on the cloud and expect 200.
-2. **Negative cases:**
-   - No token returns 401.
-   - A tampered token returns 401.
-   - A reused enrollment code returns 401.
-
-Use a temporary data dir per test and remove it afterward.
+There are no separate unit tests: the pure token functions are exercised end-to-end by this suite. The offline CI job additionally asserts, via `docker exec`, that the hub cannot reach the cloud.
 
 ## 9. Milestones
 
 Work in this order. Finish each milestone with green tests before you start the next.
 
 1. **Scaffold:** `package.json`, tsconfig, and the scripts:
-   - `"test": "node --test \"test/**/*.test.ts\""`
+   - `"test:e2e": "node --test \"e2e/**/*.test.ts\""`
    - `"typecheck": "tsc --noEmit"`
    - `"cloud": "node src/cloud/main.ts"`
    - `"hub": "node src/hub/main.ts"`
    - `"enroll-hub": "node src/hub/enroll-hub.ts"`
 
-   Also add the CI workflow.
+   Also add the Dockerfile, the two compose files, and the CI workflow.
 
-2. `core/` and `core.test.ts`.
-3. The cloud server.
-4. The hub store and enrollment.
-5. The hub server and `e2e.test.ts`.
-6. `README.md`, with these sections:
-   - Run steps: install, start the cloud, enroll the hub, start the hub, run curl examples, run the tests.
+2. The cloud (`device-cert.ts`, `session.ts`, `server.ts`, `root-key.ts`).
+3. The hub (`keys.ts`, `session.ts`, `store.ts`, `enroll-hub.ts`, `server.ts`).
+4. `e2e/verify.test.ts` and the compose `tester` services.
+5. `README.md`, with these sections:
+   - Run steps: install, start the cloud, enroll the hub, start the hub, run curl examples, verify via compose.
    - A short mechanism explanation with the diagram from section 1.
    - Trade-offs (section 10).
    - Open questions (section 11).
    - AI-use note (section 12).
 
-**Definition of done:** `npm run typecheck` and `npm test` pass on Ubuntu and Windows in CI.
+**Definition of done:** on Ubuntu CI, `npm run typecheck` passes and the black-box suite (the `tester` service) passes against both the online and offline compose setups.
 
 ## 10. Decisions and trade-offs
 
@@ -203,9 +189,9 @@ Work in this order. Finish each milestone with green tests before you start the 
 | Device cert lifetime                                        | 1 year, renew when online and < 30 days remain (renewal not implemented) | Matches the 1-year durability window in the design memo                           |
 | Cert format                                                 | JWT, not X.509                                                           | Smaller PoC. Same trust model as an intermediate CA                               |
 | Cert transport                                              | Embedded in the session header (`dcert`)                                 | Cloud verification stays fully stateless                                          |
+| Offline proof                                               | Docker network isolation, not a mocked `fetch`                           | Tests the real property (issuance with no cloud route), not an implementation detail. Costs cross-platform CI — Linux only |
 | **Rejected:** a cloud registry of device public keys        | —                                                                        | Works, but needs a DB lookup on every verification                                |
 | **Rejected:** a shared secret or a key derived from the IdP | —                                                                        | One compromised device could forge sessions for every device                      |
-| **Rejected:** OS-level network isolation in tests           | —                                                                        | Not cross-platform, and needs root                                                |
 
 ## 11. Out of scope (list as open questions in Part 3)
 

@@ -5,8 +5,8 @@ import type { Server, IncomingMessage, ServerResponse } from "node:http";
 import type { JWK, KeyLike } from "jose";
 
 import { readJson, sendJson, bearerToken } from "../http.ts";
-import { issueDeviceCert } from "../core/device-cert.ts";
-import { verifySession } from "../core/session.ts";
+import { issueDeviceCert } from "./device-cert.ts";
+import { verifySession } from "./session.ts";
 
 export type CloudRootKeyPair = {
   publicKey: KeyLike;
@@ -17,6 +17,8 @@ export type CloudRootKeyPair = {
 export type CloudConfig = {
   port: number;
   enrollmentCode: string;
+  // Bind address. Defaults to loopback; set to 0.0.0.0 in a container.
+  host?: string;
   // The root key is the trust anchor and must persist across restarts:
   // regenerating it would invalidate every device cert ever issued. In
   // production it is loaded from a secret store / KMS and injected here.
@@ -118,7 +120,7 @@ export async function createCloudServer(config: CloudConfig): Promise<CloudServe
     }
   }
 
-  await new Promise<void>((resolve) => server.listen(config.port, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(config.port, config.host ?? "127.0.0.1", resolve));
 
   return {
     server,

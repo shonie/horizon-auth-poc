@@ -1,0 +1,71 @@
+# Online setup: the hub can reach the cloud, so it enrolls at startup and then
+# serves. The `tester` runs the black-box suite against both services over the
+# compose network:
+#
+#   docker compose -f docker-compose.online.yaml run --build --rm tester
+name: horizon-online
+
+services:
+  cloud:
+    build: .
+    command: ["node", "src/cloud/main.ts"]
+    environment:
+      HORIZON_CLOUD_PORT: "8081"
+      HORIZON_BIND_HOST: "0.0.0.0"
+      HORIZON_ENROLLMENT_CODE: "enroll-dev-code"
+      HORIZON_ROOT_KEY_FILE: "/state/root.json"
+    volumes:
+      - cloud-state:/state
+    ports:
+      - "${CLOUD_HOST_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8081/.well-known/jwks.json"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  hub:
+    build: .
+    # Enroll (needs the cloud) then serve. Enrollment is setup, not a test.
+    command: ["sh", "-c", "node src/hub/enroll-hub.ts && node src/hub/main.ts"]
+    depends_on:
+      cloud:
+        condition: service_healthy
+    environment:
+      HORIZON_HUB_PORT: "8080"
+      HORIZON_BIND_HOST: "0.0.0.0"
+      HORIZON_CLOUD_URL: "http://cloud:8081"
+      HORIZON_ENROLLMENT_CODE: "enroll-dev-code"
+      HORIZON_DATA_DIR: "/state"
+    volumes:
+      - hub-state:/state
+    ports:
+      - "${HUB_HOST_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('net').connect(8080,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  tester:
+    build: .
+    command: ["npm", "run", "test:e2e"]
+    environment:
+      HUB_URL: "http://hub:8080"
+      CLOUD_URL: "http://cloud:8081"
+    # The suite is mounted rather than baked into the image.
+    volumes:
+      - ./e2e:/app/e2e:ro
+    depends_on:
+      cloud:
+        condition: service_healthy
+      hub:
+        condition: service_healthy
+
+# Named so the offline compose can reuse the enrolled hub identity and the
+# cloud root key.
+volumes:
+  cloud-state:
+    name: horizon-cloud-state
+  hub-state:
+    name: horizon-hub-state

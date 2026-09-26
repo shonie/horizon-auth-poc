@@ -1,39 +1,9 @@
-import { SignJWT, jwtVerify, decodeProtectedHeader } from "jose";
-import { randomUUID } from "node:crypto";
+import { jwtVerify, decodeProtectedHeader, importJWK } from "jose";
 import type { KeyLike } from "jose";
 import { verifyDeviceCert } from "./device-cert.ts";
-import { importPublicKey } from "./keys.ts";
 
-// One farm shift.
-export const SESSION_LIFETIME_S = 12 * 60 * 60;
-// Tolerance for farm clock drift while offline.
+// Tolerance for device clock drift while offline.
 export const CLOCK_TOLERANCE_S = 300;
-
-export type IssueSessionInput = {
-  devicePrivateKey: KeyLike;
-  deviceCert: string;
-  deviceId: string;
-  userId: string;
-  now?: Date;
-  lifetimeSeconds?: number;
-};
-
-// Hub-side, offline. Signs the session with the device private key and embeds
-// the device cert in the header so the cloud can verify statelessly.
-export async function issueSession(input: IssueSessionInput): Promise<string> {
-  const now = input.now ?? new Date();
-  const iat = Math.floor(now.getTime() / 1000);
-  const exp = iat + (input.lifetimeSeconds ?? SESSION_LIFETIME_S);
-
-  return new SignJWT({})
-    .setProtectedHeader({ alg: "EdDSA", typ: "JWT", dcert: input.deviceCert })
-    .setIssuer(`device:${input.deviceId}`)
-    .setSubject(input.userId)
-    .setJti(randomUUID())
-    .setIssuedAt(iat)
-    .setExpirationTime(exp)
-    .sign(input.devicePrivateKey);
-}
 
 export type VerifySessionOptions = {
   rootKey: KeyLike;
@@ -65,7 +35,7 @@ export async function verifySession(
   });
 
   // 3. Import the device key from the cert and verify the session with it.
-  const deviceKey = await importPublicKey(cert.cnf.jwk);
+  const deviceKey = (await importJWK(cert.cnf.jwk, "EdDSA")) as KeyLike;
   const { payload } = await jwtVerify(token, deviceKey, {
     clockTolerance: CLOCK_TOLERANCE_S,
     currentDate: options.currentDate,

@@ -8,7 +8,7 @@
     "node": ">=22.18.0"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test:e2e": "node --test \"e2e/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "cloud": "node src/cloud/main.ts",
     "hub": "node src/hub/main.ts",

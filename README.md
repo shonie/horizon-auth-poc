@@ -17,6 +17,8 @@ cloud root key ──signs──▶ device cert {sub: deviceId, cnf.jwk} ──k
 
 - Node **>= 22.18** (runs `.ts` files directly via type stripping; CI uses Node 24).
 - No build step. `jose` is the only runtime dependency.
+- Docker + Docker Compose for the integration tests (Linux). CI runs on Ubuntu
+  only — cross-platform support is out of scope for this PoC.
 
 ## Run steps
 
@@ -64,12 +66,33 @@ curl -s http://127.0.0.1:8081/whoami -H "authorization: Bearer $TOKEN"
 curl -s http://127.0.0.1:8081/.well-known/jwks.json
 ```
 
-### Run the tests
+### Verify
+
+The type check runs anywhere:
 
 ```bash
 npm run typecheck   # tsc --noEmit
-npm test            # node --test
 ```
+
+Verification runs **through Docker Compose**. Each setup defines a `tester`
+service that runs the connectivity-agnostic black-box suite (`e2e/`) against the
+hub and cloud over the compose network — you don't run anything against the host.
+The `tester`'s exit code is the result.
+
+```bash
+# Online: the hub enrolls against the cloud, then the tester verifies
+# issue + verify. (--build builds the image on first run.)
+docker compose -f docker-compose.online.yaml run --build --rm tester
+docker compose -f docker-compose.online.yaml down     # keep the volumes
+
+# Offline: reuse the enrolled identity + persisted root key. The hub is on a
+# network with no route to the cloud, yet the SAME suite passes — the tester
+# reaches both services and carries the token across.
+docker compose -f docker-compose.offline.yaml run --rm tester
+docker compose -f docker-compose.offline.yaml down
+```
+
+Run the online setup first — it populates the volumes the offline setup reuses.
 
 ## How it works
 
@@ -97,14 +120,26 @@ forge sessions for any other device, because it does not hold the root key.
 
 ### Emulating network absence
 
-- **By design:** the hub session-issuance path has no network dependency.
-  `enroll-hub.ts` is the only network caller.
-- **In tests:** enroll the hub while the cloud runs, then close the cloud (a real
-  request would now get `ECONNREFUSED`), replace `globalThis.fetch` with a mock
-  that throws, issue a session, and assert `fetch.mock.callCount() === 0`. That
-  zero-call assertion is the proof.
-- **Optional manual demo (Linux only, not in CI):** run the hub under
-  `docker run --network none` after enrolling to a mounted data dir.
+The offline proof lives in the **environment**, not in the test code. The same
+black-box suite runs against two compose setups:
+
+- **`docker-compose.online.yaml`** — hub and cloud share a network. The hub
+  enrolls (setup, not asserted) then serves. Everything works.
+- **`docker-compose.offline.yaml`** — reuses the enrolled hub identity and the
+  persisted cloud root key from the online run, but puts the hub on a network the
+  cloud is **not** on. The hub literally cannot reach the cloud (its hostname
+  doesn't resolve), yet it still issues sessions — and those tokens verify at the
+  cloud, which the `tester` reaches on the other network (it plays the courier).
+
+Because the suite never depends on hub→cloud connectivity at runtime (only
+enrollment does, and that's setup), the identical suite passes in both setups.
+That's the proof, and it's a real network cut rather than a mocked `fetch`. CI
+additionally asserts, via `docker exec`, that the offline hub genuinely cannot
+reach the cloud — so the isolation is verified, not assumed.
+
+For a stronger "no internet at all" demo, run the enrolled hub under
+`docker run --network none` (`internal: true` would do it in compose too, but it
+also disables published ports).
 
 ## Trade-offs
 
@@ -115,9 +150,9 @@ forge sessions for any other device, because it does not hold the root key.
 | Device cert lifetime                                        | 1 year, renew when online and < 30 days remain (renewal not implemented) | Matches the 1-year durability window in the design memo                           |
 | Cert format                                                 | JWT, not X.509                                                           | Smaller PoC. Same trust model as an intermediate CA                               |
 | Cert transport                                              | Embedded in the session header (`dcert`)                                 | Cloud verification stays fully stateless                                          |
+| Offline proof                                               | Docker network isolation, not a mocked `fetch`                           | Tests the real property (issuance with no cloud route), not an implementation detail. Costs cross-platform CI — Linux only |
 | **Rejected:** a cloud registry of device public keys        | —                                                                        | Works, but needs a DB lookup on every verification                                |
 | **Rejected:** a shared secret or a key derived from the IdP | —                                                                        | One compromised device could forge sessions for every device                      |
-| **Rejected:** OS-level network isolation in tests           | —                                                                        | Not cross-platform, and needs root                                                |
 
 ## Open questions (out of scope for this PoC)
 

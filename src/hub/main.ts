@@ -2,9 +2,10 @@ import { createHubServer } from "./server.ts";
 import { createStore, resolveDataDir } from "./store.ts";
 
 const port = Number(process.env.HORIZON_HUB_PORT ?? 8080);
+const host = process.env.HORIZON_BIND_HOST;
 const store = createStore(resolveDataDir());
 
-const hub = await createHubServer({ port, store });
+const hub = await createHubServer({ port, store, host });
 
 console.log(`[hub] listening on http://127.0.0.1:${hub.port()}`);
 console.log(`[hub] data dir: ${store.dataDir}`);

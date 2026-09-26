@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import type { JWK } from "jose";
 
-import { generateDeviceKeys, exportPrivateJwk } from "../core/keys.ts";
+import { generateDeviceKeys, exportPrivateJwk } from "./keys.ts";
 import { createStore, resolveDataDir } from "./store.ts";
 import type { Store } from "./store.ts";
 

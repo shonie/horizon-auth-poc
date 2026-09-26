@@ -1,7 +1,9 @@
 import { generateKeyPair, exportJWK, importJWK } from "jose";
 import type { JWK, KeyLike } from "jose";
 
-// Ed25519 key pair. The private key never leaves the device that generated it.
+// The device key lifecycle lives on the hub: it generates the key pair at
+// enrollment and imports its private key to sign sessions. The private key
+// never leaves the device.
 export type KeyPair = {
   publicKey: KeyLike;
   privateKey: KeyLike;
@@ -22,9 +24,5 @@ export async function exportPrivateJwk(privateKey: KeyLike): Promise<JWK> {
 }
 
 export async function importPrivateKey(jwk: JWK): Promise<KeyLike> {
-  return (await importJWK(jwk, "EdDSA")) as KeyLike;
-}
-
-export async function importPublicKey(jwk: JWK): Promise<KeyLike> {
   return (await importJWK(jwk, "EdDSA")) as KeyLike;
 }

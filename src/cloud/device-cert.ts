@@ -29,7 +29,7 @@ export type IssueDeviceCertInput = {
   lifetimeSeconds?: number;
 };
 
-// Cloud-side. Binds deviceId + device public key, signed by the root key.
+// Binds deviceId + device public key, signed by the root key.
 export async function issueDeviceCert(input: IssueDeviceCertInput): Promise<string> {
   const now = input.now ?? new Date();
   const iat = Math.floor(now.getTime() / 1000);

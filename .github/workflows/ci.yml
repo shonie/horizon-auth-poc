@@ -6,12 +6,8 @@ on:
   pull_request:
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+  typecheck:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -20,4 +16,28 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Online: the hub enrolls against the cloud, then the tester verifies
+      # issue + verify over the compose network. Exit code = the test result.
+      - name: Verify online
+        run: docker compose -f docker-compose.online.yaml run --build --rm tester
+      - name: Tear down online (keep volumes)
+        run: docker compose -f docker-compose.online.yaml down
+
+      # Offline: reuse the enrolled identity + root key; the hub has no route to
+      # the cloud, yet the same suite passes.
+      - name: Verify offline
+        run: docker compose -f docker-compose.offline.yaml run --rm tester
+      - name: Assert the hub cannot reach the cloud
+        run: |
+          if docker exec horizon-offline-hub-1 wget -q -T 3 -O- http://cloud:8081/.well-known/jwks.json >/dev/null 2>&1; then
+            echo "hub reached the cloud — offline isolation is broken"; exit 1
+          fi
+          echo "confirmed: the hub cannot reach the cloud"
+      - name: Tear down offline
+        run: docker compose -f docker-compose.offline.yaml down
